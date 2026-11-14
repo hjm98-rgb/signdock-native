@@ -255,27 +255,64 @@ jobs:
 
 ---
 
-## 8. 本地验证 / 手动触发
+## 8. 本地验证 / 手动触发 / 推送（实测坑位）
 
+### ⚠️ 沙箱网络：`github.com` 不通，只有 `api.github.com` 通
+实测（2026-11-14）：`curl https://github.com` 12 秒超时，`git push` 卡约 133 秒后 `Failed to connect to github.com port 443`；
+但 `curl https://api.github.com` 2.2 秒返回 200。**所以不要用 `git push`**，改用 GitHub Contents API 推文件。
+
+会失败的写法（别再试）：
+- `git push "https://x-access-token:$TOK@github.com/..."` → 直连超时
+- `git -c http.extraHeader="AUTHORIZATION: bearer $TOK" push` → git 不认 bearer，要求输入用户名
+
+### 正确：用 Contents API 逐文件推
 ```bash
-# 本地（Linux 无法编译 iOS，只做结构与文档校验）
 cd /workspace/signdock-native
-git add -A && git commit -m "cloud build: workflow + project + docs"
 TOK=$(cat /root/.config/signdock/gh_token)
-git -c http.extraHeader="AUTHORIZATION: bearer $TOK" push origin main
+python3 - <<'PY'
+import os, base64, json, urllib.request, urllib.error
+TOK = open('/root/.config/signdock/gh_token').read().strip()
+REPO='hjm98-rgb/signdock-native'; API='https://api.github.com'
+def put(path):
+    data=open(path,'rb').read()
+    # 更新已有文件必须先取当前 sha
+    sha=None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+            f'{API}/repos/{REPO}/contents/{path}',
+            headers={'Authorization':f'token {TOK}','User-Agent':'Signdock/1.0'}),timeout=30) as r:
+            sha=json.load(r)['sha']
+    except urllib.error.HTTPError: pass
+    body={'message':f'Update {path}','content':base64.b64encode(data).decode(),'branch':'main'}
+    if sha: body['sha']=sha
+    req=urllib.request.Request(f'{API}/repos/{REPO}/contents/{path}',
+        data=json.dumps(body).encode(),method='PUT',
+        headers={'Authorization':f'token {TOK}','Accept':'application/vnd.github+json',
+                 'Content-Type':'application/json','User-Agent':'Signdock/1.0'})
+    with urllib.request.urlopen(req,timeout=40) as r:
+        print('  ✅',path,json.load(r)['commit']['sha'][:7])
+for p in ['docs/CLOUD-BUILD.md','CODEBUDDY.md','README.md','.gitignore',
+          '.github/workflows/build.yml','project.yml','ExportOptions.plist']:
+    if os.path.exists(p): put(p)
+PY
+# 注意：本地 git 与远端历史会不一致（远端每个文件一个 commit），以远端为准。
+```
 
-# 查看 Actions 结果
+### 查看 Actions 结果 / 手动触发
+```bash
+TOK=$(cat /root/.config/signdock/gh_token)
+# 查看
 curl -s -H "Authorization: token $TOK" \
-  https://api.github.com/repos/hjm98-rgb/signdock-native/actions/runs?per_page=3 \
-  | python3 -c "import sys,json;d=json.load(sys.stdin);print([(r['name'],r['status'],r['conclusion']) for r in d['workflow_runs']])"
-
+  "https://api.github.com/repos/hjm98-rgb/signdock-native/actions/runs?per_page=3" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin);print([(r['status'],r['conclusion']) for r in d['workflow_runs']])"
 # 手动触发
 curl -s -X POST -H "Authorization: token $TOK" \
-  https://api.github.com/repos/hjm98-rgb/signdock-native/actions/workflows/build.yml/dispatches \
+  "https://api.github.com/repos/hjm98-rgb/signdock-native/actions/workflows/build.yml/dispatches" \
   -d '{"ref":"main"}'
 ```
 
-编译报错时：读 Actions 日志 → 改 `project.yml` / Swift 源码 → 重新 commit + push，循环到绿。
+编译报错时：读 Actions 日志 → 改 `project.yml` / Swift 源码 → 用上面的 Contents API 重新推，循环到绿。
+（Linux 无法编译 iOS，本地只做结构/语法/文档校验，真编译全靠 macOS runner。）
 
 ---
 
