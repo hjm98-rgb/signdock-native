@@ -1,0 +1,24 @@
+# 本地私有记忆（不提交）
+CODEBUDDY.local.md
+
+# 凭据 / 证书 —— 绝不入库
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+*_token*
+gh_token
+.env
+secrets/
+
+# 构建产物
+build/
+DerivedData/
+*.xcarchive/
+*.ipa
+*.xcuserstate
+xcuserdata/
+.DS_Store
+
+# xcodegen 生成物（由 project.yml 生成，不提交）
+*.xcodeproj/
